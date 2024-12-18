@@ -1,0 +1,8 @@
+testing
+testing/*
+venv
+venv/*
+domain_owner_checker/venv
+domain_owner_checker/venv/*
+domain_owner_checker/output
+domain_owner_checker/output/*
