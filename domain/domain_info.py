@@ -1,34 +1,48 @@
-# domain/domain_info.py
 import whois
 from datetime import datetime
 from utils.logging import log_error, log_info
 
 
+def parse_date(date_value):
+    """
+    Универсальный парсер для дат из WHOIS-записей.
+    """
+    if isinstance(date_value, list):
+        date_value = date_value[0]
+    if isinstance(date_value, str):
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d-%b-%Y", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(date_value, fmt)
+            except ValueError:
+                continue
+    return date_value  # Вернуть оригинальное значение, если это datetime или None
+
+
 def get_domain_info(domain):
     """
-    Получает информацию о домене, включая дату создания и обновления.
+    Получает информацию о домене, включая дату создания, обновления, регистратора и статус.
     """
     try:
         w = whois.whois(domain)
-        creation_date = None
-        updated_date = None
 
-        # Обрабатываем дату создания
-        if w.creation_date:
-            creation_date = w.creation_date[0] if isinstance(w.creation_date, list) else w.creation_date
-            if isinstance(creation_date, str):
-                creation_date = datetime.strptime(creation_date, "%Y-%m-%d")
+        # Обрабатываем даты
+        creation_date = parse_date(w.creation_date)
+        updated_date = parse_date(w.updated_date)
 
-        # Обрабатываем дату обновления
-        if w.updated_date:
-            updated_date = w.updated_date[0] if isinstance(w.updated_date, list) else w.updated_date
-            if isinstance(updated_date, str):
-                updated_date = datetime.strptime(updated_date, "%Y-%m-%d")
+        if not creation_date:
+            log_info(f"[Domain Info] No creation date found for domain '{domain}'.")
+        if not updated_date:
+            log_info(f"[Domain Info] No updated date found for domain '{domain}'.")
 
-        return {"creation_date": creation_date, "updated_date": updated_date}
-    except whois.parser.PywhoisError:
-        log_info(f"[Domain Info] Domain '{domain}' is available for registration.")
-        return None  # Домен доступен для регистрации
+        return {
+            "creation_date": creation_date,
+            "updated_date": updated_date,
+            "registrar": w.registrar if hasattr(w, 'registrar') else None,
+            "status": w.status if hasattr(w, 'status') else None
+        }
     except Exception as e:
+        if "No match for domain" in str(e):
+            log_info(f"[Domain Info] Domain '{domain}' is available for registration.")
+            return None
         log_error(f"[Domain Info] Error retrieving WHOIS info for {domain}: {e}")
         return None
