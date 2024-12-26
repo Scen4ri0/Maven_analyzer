@@ -6,7 +6,6 @@ from artifact.key_analysis import (
     is_legitimate_key_change,
     extract_key_user_info,
 )
-from artifact.version_management import compare_versions,parse_version, get_latest_versions
 from utils.logging import log_info, log_warning, log_error
 from utils.file_operations import download_file, save_file, clean_up_files
 from domain.domain_utils import group_id_to_domain, is_domain_available, is_recently_updated

@@ -13,7 +13,6 @@ from .signature_verification import (
     verify_signature_with_key_handling,
     fetch_missing_gpg_key
 )
-from .version_management import get_latest_versions
 
 __all__ = [
     "process_artifact",
@@ -24,6 +23,5 @@ __all__ = [
     "extract_key_user_info",
     "verify_signature",
     "verify_signature_with_key_handling",
-    "get_latest_versions",
     "fetch_missing_gpg_key"
 ]
