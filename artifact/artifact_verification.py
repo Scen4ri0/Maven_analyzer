@@ -194,7 +194,7 @@ async def process_artifact(artifact, check_domain=False, github_token=None):
 
     # Clean up downloaded files
     if artifact_file:
-        clean_up_files([artifact_file])
+        clean_up_files(f"{artifact_id}-{version}")
 
     log_info(f"[Processing] Verification complete for artifact: {artifact}")
     return result
