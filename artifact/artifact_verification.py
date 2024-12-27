@@ -11,18 +11,13 @@ from domain.domain_utils import group_id_to_domain, is_domain_available, is_rece
 from repositories.repositories import find_in_repositories, compare_contributors_across_versions, compare_versions_across_repositories
 from datetime import datetime, timezone
 from static_analysis.yara_analysis import load_yara_rules, scan_artifact_with_yara
+from sandbox.virustotal import scan_file, get_report, analyze_in_sandbox
+
+
 
 async def download_artifact(group_id, artifact_id, version):
     """
     Downloads the artifact file (.jar or .aar) from Maven repository.
-
-    Args:
-        group_id (str): Group ID of the artifact.
-        artifact_id (str): Artifact ID.
-        version (str): Version of the artifact.
-
-    Returns:
-        str: Path to the downloaded file or None if download failed.
     """
     base_url = f"https://repo1.maven.org/maven2/{group_id.replace('.', '/')}/{artifact_id}/{version}/"
     file_types = ["jar", "aar"]
@@ -49,18 +44,10 @@ async def download_artifact(group_id, artifact_id, version):
     return None
 
 
-async def process_artifact(artifact, check_domain=False, github_token=None):
+async def process_artifact(artifact, check_domain=False, github_token=None, sandbox_api_key=None):
     """
     Processes an artifact to verify its status across repositories, domain availability,
-    version consistency, signature verification, contributor analysis, and YARA static analysis.
-
-    Args:
-        artifact (str): The artifact in the format group_id:artifact_id:version.
-        check_domain (bool): Flag to enable domain and publication date checks.
-        github_token (str, optional): GitHub token for authenticated requests.
-
-    Returns:
-        dict: A dictionary containing verification results for the artifact.
+    version consistency, signature verification, contributor analysis, and optional sandbox analysis.
     """
     try:
         group_id, artifact_id, version = artifact.split(':')
@@ -102,6 +89,12 @@ async def process_artifact(artifact, check_domain=False, github_token=None):
     # YARA analysis if the artifact file was downloaded
     if artifact_file and yara_rules:
         tasks.append(scan_artifact_with_yara(yara_rules, artifact_file))
+    else:
+        tasks.append(None)
+
+    # Optional sandbox analysis
+    if sandbox_api_key and artifact_file:
+        tasks.append(analyze_in_sandbox(artifact_file, sandbox_api_key))
     else:
         tasks.append(None)
 
@@ -176,9 +169,26 @@ async def process_artifact(artifact, check_domain=False, github_token=None):
         log_warning(f"[YARA Analysis] Error occurred: {yara_result}")
         result["yara_analysis"] = {"matches": [], "error": "Failed to analyze"}
 
+    # Process sandbox analysis results
+    sandbox_result = results[5 if check_domain else 3]
+    if sandbox_result and isinstance(sandbox_result, dict):
+        analysis_data = sandbox_result.get("data", {}).get("attributes", {}).get("results", {})
+        non_null_results = sum(1 for av_name, av_data in analysis_data.items() if av_data.get("result") is not None)
+
+        result.update({
+            "sandbox_analysis": {
+                "total_engines": len(analysis_data),
+                "non_null_results": non_null_results,
+                "malicious_results": [av_name for av_name, av_data in analysis_data.items() if av_data.get("result") is not None],
+            }
+        })
+        log_info(f"[Sandbox Analysis] Total engines: {len(analysis_data)}, Non-null results: {non_null_results}")
+    elif sandbox_api_key:
+        log_warning(f"[Sandbox Analysis] Error occurred: {sandbox_result}")
+        result["sandbox_analysis"] = {"error": "Failed to analyze in sandbox"}
+
     # Calculate risk
     try:
-        # Ensure signature_status is mapped back to ArtifactStatus if needed
         signature_status = ArtifactStatus[result.get("signature", "NOT_SIGNED").upper()]
         risk = calculate_risk(
             result.get("version_differences", False),
@@ -198,7 +208,6 @@ async def process_artifact(artifact, check_domain=False, github_token=None):
 
     log_info(f"[Processing] Verification complete for artifact: {artifact}")
     return result
-
 
 
 ### Асинхронная проверка подписей и контрибьюторов
