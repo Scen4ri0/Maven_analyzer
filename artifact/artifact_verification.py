@@ -11,7 +11,7 @@ from domain.domain_utils import group_id_to_domain, is_domain_available, is_rece
 from repositories.repositories import find_in_repositories, compare_contributors_across_versions, compare_versions_across_repositories
 from datetime import datetime, timezone
 from static_analysis.yara_analysis import load_yara_rules, scan_artifact_with_yara
-from sandbox.virustotal import scan_file, get_report, analyze_in_sandbox
+from sandbox.virustotal import analyze_in_sandbox
 
 
 
@@ -93,10 +93,9 @@ async def process_artifact(artifact, check_domain=False, github_token=None, sand
         tasks.append(None)
 
     # Optional sandbox analysis
+    sandbox_index = len(tasks)  # Track sandbox position in the results array
     if sandbox_api_key and artifact_file:
         tasks.append(analyze_in_sandbox(artifact_file, sandbox_api_key))
-    else:
-        tasks.append(None)
 
     # Execute all tasks
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -170,22 +169,22 @@ async def process_artifact(artifact, check_domain=False, github_token=None, sand
         result["yara_analysis"] = {"matches": [], "error": "Failed to analyze"}
 
     # Process sandbox analysis results
-    sandbox_result = results[5 if check_domain else 3]
-    if sandbox_result and isinstance(sandbox_result, dict):
-        analysis_data = sandbox_result.get("data", {}).get("attributes", {}).get("results", {})
-        non_null_results = sum(1 for av_name, av_data in analysis_data.items() if av_data.get("result") is not None)
-
-        result.update({
-            "sandbox_analysis": {
-                "total_engines": len(analysis_data),
-                "non_null_results": non_null_results,
-                "malicious_results": [av_name for av_name, av_data in analysis_data.items() if av_data.get("result") is not None],
-            }
-        })
-        log_info(f"[Sandbox Analysis] Total engines: {len(analysis_data)}, Non-null results: {non_null_results}")
-    elif sandbox_api_key:
-        log_warning(f"[Sandbox Analysis] Error occurred: {sandbox_result}")
-        result["sandbox_analysis"] = {"error": "Failed to analyze in sandbox"}
+    if sandbox_api_key and artifact_file:
+        sandbox_result = results[sandbox_index]
+        if sandbox_result and isinstance(sandbox_result, dict):
+            analysis_data = sandbox_result.get("data", {}).get("attributes", {}).get("results", {})
+            non_null_results = sum(1 for av_name, av_data in analysis_data.items() if av_data.get("result") is not None)
+            result.update({
+                "sandbox_analysis": {
+                    "total_engines": len(analysis_data),
+                    "non_null_results": non_null_results,
+                    "malicious_results": [av_name for av_name, av_data in analysis_data.items() if av_data.get("result") is not None],
+                }
+            })
+            log_info(f"[Sandbox Analysis] Total engines: {len(analysis_data)}, Non-null results: {non_null_results}")
+        else:
+            log_warning(f"[Sandbox Analysis] Error occurred: {sandbox_result}")
+            result["sandbox_analysis"] = {"error": "Failed to analyze in sandbox"}
 
     # Calculate risk
     try:
@@ -208,6 +207,7 @@ async def process_artifact(artifact, check_domain=False, github_token=None, sand
 
     log_info(f"[Processing] Verification complete for artifact: {artifact}")
     return result
+
 
 
 ### Асинхронная проверка подписей и контрибьюторов
