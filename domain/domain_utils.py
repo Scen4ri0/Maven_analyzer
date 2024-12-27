@@ -33,11 +33,8 @@ def is_domain_available(domain):
         if not hasattr(whois_info, "status") or not whois_info.status:
             log_warning(f"[Domain Check] Domain '{domain}' has no WHOIS status. Marking as VULNERABLE.")
             return True
-
-        log_info(f"[Domain Check] Domain '{domain}' is registered with status: {whois_info.status}.")
         return False
     except Exception as e:
-        log_warning(f"[Domain Check] WHOIS lookup failed for domain '{domain}': {e}. Marking as VULNERABLE.")
         return True
 
 
@@ -96,7 +93,6 @@ async def check_domain_status(group_id):
         recent_update = is_recently_updated(domain)
         
         if recent_update.get("error"):
-            log_warning(f"[Domain Check] Error checking updates: {recent_update['error']}")
             recent_update_status = False
         else:
             recent_update_status = recent_update.get("recently_updated", False)
@@ -104,5 +100,4 @@ async def check_domain_status(group_id):
         return domain_status, recent_update_status
 
     except Exception as e:
-        log_error(f"[Domain Check] Unexpected error for domain '{domain}': {e}")
         return "error", False

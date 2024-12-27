@@ -16,4 +16,5 @@ six==1.17.0
 tenacity==9.0.0
 urllib3==2.3.0
 whois==1.20240129.2
+yara-python==4.5.1
 yarl==1.18.3

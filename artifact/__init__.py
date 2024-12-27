@@ -2,7 +2,7 @@
 
 from .artifact_verification import process_artifact
 from .artifact_status import ArtifactStatus, calculate_risk
-from .artifact_info import get_artifact_info, get_selected_versions, extract_publication_date
+from .artifact_info import get_selected_versions, extract_publication_date
 from .key_analysis import (
     are_keys_related,
     is_legitimate_key_change,
@@ -18,7 +18,6 @@ from .signature_verification import (
 __all__ = [
     "process_artifact",
     "ArtifactStatus",
-    "get_artifact_info",
     "are_keys_related",
     "is_legitimate_key_change",
     "extract_key_user_info",

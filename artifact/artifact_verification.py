@@ -1,18 +1,58 @@
 import asyncio
+import aiohttp
+import os
 from datetime import datetime
 from artifact.artifact_status import ArtifactStatus, calculate_risk
 from artifact.signature_verification import compare_signatures_across_versions
 from artifact.artifact_info import get_selected_versions, extract_publication_date
 from utils.logging import log_info, log_warning, log_error
+from utils.file_operations import save_file, clean_up_files
 from domain.domain_utils import group_id_to_domain, is_domain_available, is_recently_updated, check_domain_status
 from repositories.repositories import find_in_repositories, compare_contributors_across_versions, compare_versions_across_repositories
 from datetime import datetime, timezone
+from static_analysis.yara_analysis import load_yara_rules, scan_artifact_with_yara
+
+async def download_artifact(group_id, artifact_id, version):
+    """
+    Downloads the artifact file (.jar or .aar) from Maven repository.
+
+    Args:
+        group_id (str): Group ID of the artifact.
+        artifact_id (str): Artifact ID.
+        version (str): Version of the artifact.
+
+    Returns:
+        str: Path to the downloaded file or None if download failed.
+    """
+    base_url = f"https://repo1.maven.org/maven2/{group_id.replace('.', '/')}/{artifact_id}/{version}/"
+    file_types = ["jar", "aar"]
+    for file_type in file_types:
+        file_name = f"{artifact_id}-{version}.{file_type}"
+        url = f"{base_url}{file_name}"
+        log_info(f"[Download] Attempting to download: {url}")
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        file_path = os.path.join(os.getcwd(), file_name)
+                        content = await response.read()
+                        save_file(file_path, content)
+                        log_info(f"[Download] Successfully downloaded: {file_path}")
+                        return file_path
+                    else:
+                        log_warning(f"[Download] {file_name} not found (status: {response.status}). Trying next file type.")
+        except Exception as e:
+            log_error(f"[Download] Error downloading file {file_name}: {e}")
+    
+    log_warning("[Download] Failed to download artifact file. Both .jar and .aar not found.")
+    return None
 
 
 async def process_artifact(artifact, check_domain=False, github_token=None):
     """
     Processes an artifact to verify its status across repositories, domain availability,
-    version consistency, and signature verification. Also checks for contributor differences.
+    version consistency, signature verification, contributor analysis, and YARA static analysis.
 
     Args:
         artifact (str): The artifact in the format group_id:artifact_id:version.
@@ -29,30 +69,46 @@ async def process_artifact(artifact, check_domain=False, github_token=None):
         return {"artifact": artifact, "error": "Invalid format"}
 
     log_info(f"[Processing] Start verification for artifact: {artifact}")
-    
+
     result = {"artifact": artifact}
     tasks = []
 
-    # Проверка домена и обновлений
+    # Load YARA rules
+    try:
+        yara_rules = load_yara_rules("yara_rules/java_analysis_rules.yar")
+    except Exception as e:
+        log_error(f"[YARA] Failed to load rules: {e}")
+        yara_rules = None
+
+    # Download artifact file for analysis
+    artifact_file = await download_artifact(group_id, artifact_id, version)
+
+    # Domain and update checks
     if check_domain:
         tasks.append(check_domain_status(group_id))
         tasks.append(extract_publication_date(
-            base_repository_url="https://repo1.maven.org/maven2",  # Укажите базовый URL
+            base_repository_url="https://repo1.maven.org/maven2",
             group_id=group_id,
             artifact_id=artifact_id,
             version=version
         ))
 
-    # Проверка репозиториев
+    # Repository checks
     tasks.append(find_in_repositories(group_id, artifact_id, version))
 
-    # Проверка подписей и контрибьюторов
+    # Signature and contributor checks
     tasks.append(check_signatures_and_contributors(group_id, artifact_id, version, github_token))
 
-    # Выполняем все задачи параллельно
+    # YARA analysis if the artifact file was downloaded
+    if artifact_file and yara_rules:
+        tasks.append(scan_artifact_with_yara(yara_rules, artifact_file))
+    else:
+        tasks.append(None)
+
+    # Execute all tasks
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Обработка результата проверки домена
+    # Process domain check results
     if check_domain:
         domain_result = results[0]
         if isinstance(domain_result, tuple):
@@ -65,7 +121,7 @@ async def process_artifact(artifact, check_domain=False, github_token=None):
             log_warning(f"[Domain Check] Error occurred: {domain_result}")
             result.update({"domain": "error", "recently_updated": False})
 
-        # Обработка результата публикации
+        # Process publication date result
         publication_date_result = results[1]
         recent_threshold = datetime(2024, 1, 1, tzinfo=timezone.utc)
         if isinstance(publication_date_result, datetime):
@@ -76,7 +132,7 @@ async def process_artifact(artifact, check_domain=False, github_token=None):
             log_warning(f"[Publication Date] Could not determine publication date: {publication_date_result}")
             result["published_recently"] = False
 
-    # Обработка результата проверки репозиториев
+    # Process repository check results
     repository_result = results[2 if check_domain else 0]
     if isinstance(repository_result, list) and repository_result:
         log_info(f"[Repository Check] Found in {len(repository_result)} repositories.")
@@ -92,15 +148,14 @@ async def process_artifact(artifact, check_domain=False, github_token=None):
         })
         return result
 
-    # Обработка результата проверки подписей и контрибьюторов
+    # Process signature and contributor check results
     signature_and_contributors_result = results[3 if check_domain else 1]
     if isinstance(signature_and_contributors_result, tuple):
-        signature_status, contributors_diff, version_differences, risk = signature_and_contributors_result
+        signature_status, contributors_diff, version_differences = signature_and_contributors_result
         result.update({
             "signature": signature_status.value,
             "contributors_diff": contributors_diff,
             "version_differences": version_differences,
-            "risk": risk,
         })
     else:
         log_warning(f"[Signature/Contributor Check] Error occurred: {signature_and_contributors_result}")
@@ -108,11 +163,43 @@ async def process_artifact(artifact, check_domain=False, github_token=None):
             "version_differences": False,
             "signature": ArtifactStatus.NOT_SIGNED.value,
             "contributors_diff": False,
-            "risk": "unknown",
         })
+
+    # Process YARA analysis results
+    yara_result = results[4 if check_domain else 2]
+    yara_scan_matched = False
+    if yara_result and isinstance(yara_result, dict):
+        yara_scan_matched = bool(yara_result.get("matches"))
+        result.update({"yara_analysis": yara_result})
+        log_info(f"[YARA Analysis] Matches found: {yara_scan_matched}")
+    else:
+        log_warning(f"[YARA Analysis] Error occurred: {yara_result}")
+        result["yara_analysis"] = {"matches": [], "error": "Failed to analyze"}
+
+    # Calculate risk
+    try:
+        # Ensure signature_status is mapped back to ArtifactStatus if needed
+        signature_status = ArtifactStatus[result.get("signature", "NOT_SIGNED").upper()]
+        risk = calculate_risk(
+            result.get("version_differences", False),
+            result.get("contributors_diff", False),
+            signature_status,
+            yara_scan_matched
+        )
+        result["risk"] = risk
+        log_info(f"[Risk Calculation] Risk level for artifact '{artifact}': {risk}")
+    except Exception as e:
+        log_error(f"[Risk Calculation] Error calculating risk for artifact '{artifact}': {e}")
+        result["risk"] = "unknown"
+
+    # Clean up downloaded files
+    if artifact_file:
+        clean_up_files([artifact_file])
 
     log_info(f"[Processing] Verification complete for artifact: {artifact}")
     return result
+
+
 
 ### Асинхронная проверка подписей и контрибьюторов
 async def check_signatures_and_contributors(group_id, artifact_id, version, github_token):
@@ -130,8 +217,7 @@ async def check_signatures_and_contributors(group_id, artifact_id, version, gith
         differences = await compare_contributors_across_versions(group_id.split(".")[-1], artifact_id, versions_to_check, github_token)
         contributors_diff = bool(differences)
 
-    risk = calculate_risk(version_differences, contributors_diff, signature_status)
-    return signature_status, contributors_diff, version_differences, risk
+    return signature_status, contributors_diff, version_differences
 
 async def check_domain_status(group_id):
     """

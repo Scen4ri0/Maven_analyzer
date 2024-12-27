@@ -44,5 +44,4 @@ def get_domain_info(domain):
         if "No match for domain" in str(e):
             log_info(f"[Domain Info] Domain '{domain}' is available for registration.")
             return None
-        log_error(f"[Domain Info] Error retrieving WHOIS info for {domain}: {e}")
         return None

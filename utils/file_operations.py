@@ -15,21 +15,15 @@ async def download_file(url, timeout=10):
                 if response.status == 200:
                     content = await response.read()
                     if not content:
-                        log_warning(f"[Download File] Empty file content from {url}")
                         raise RuntimeError(f"Empty file content from {url}")
-                    log_info(f"[Download File] Successfully downloaded from {url}")
                     return content
                 elif response.status == 404:
-                    log_warning(f"[Download File] File not found: {url}")
                     raise RuntimeError(f"File not found: {url}")
                 else:
-                    log_warning(f"[Download File] Failed to download {url} with status {response.status}")
                     raise RuntimeError(f"Failed to download file from {url}: Status {response.status}")
     except aiohttp.ClientError as e:
-        log_error(f"[Download File] Client error downloading file from {url}: {e}")
         raise RuntimeError(f"Client error downloading file from {url}: {e}")
     except Exception as e:
-        log_error(f"[Download File] Unexpected error downloading file from {url}: {e}")
         raise
 
 
@@ -46,9 +40,7 @@ def save_file(file_name, content):
     try:
         with open(file_name, 'wb') as file:
             file.write(content)
-        log_info(f"[Save File] Saved file {file_name}")
     except Exception as e:
-        log_error(f"[Save File] Error saving file {file_name}: {e}")
         raise
 
 
@@ -62,9 +54,7 @@ def delete_file(file_name):
     try:
         if os.path.exists(file_name):
             os.remove(file_name)
-            log_info(f"[Delete File] Deleted file {file_name}")
     except Exception as e:
-        log_error(f"[Delete File] Error deleting file {file_name}: {e}")
         raise
 
 
@@ -83,8 +73,6 @@ def clean_up_files(prefix, extensions=None):
         file_name = f"{prefix}.{ext}"
         if is_file_present(file_name):
             delete_file(file_name)
-        else:
-            log_info(f"[Clean Up Files] File {file_name} does not exist.")
 
 
 
@@ -110,11 +98,9 @@ def load_file_content(file_name):
         if is_file_present(file_name):
             with open(file_name, 'rb') as file:
                 content = file.read()
-                log_info(f"[Load File] Loaded content from {file_name}")
                 return content
         return None
     except Exception as e:
-        log_error(f"[Load File] Error reading file {file_name}: {e}")
         raise
 
 
@@ -129,11 +115,9 @@ def validate_file_content(file_name, expected_start=None):
     try:
         content = load_file_content(file_name)
         if content and expected_start and not content.startswith(expected_start):
-            log_warning(f"[Validate File] File {file_name} does not start with expected bytes.")
             return False
         return True
     except Exception as e:
-        log_error(f"[Validate File] Error validating file {file_name}: {e}")
         raise
 
 
@@ -154,8 +138,5 @@ def check_signature_files(prefix, extensions=None):
         file_name = f"{prefix}.{ext}"
         if not is_file_present(file_name):
             missing_signatures.append(file_name)
-
-    if missing_signatures:
-        log_warning(f"[Check Signatures] Missing signature files: {missing_signatures}")
 
     return len(missing_signatures) == 0
