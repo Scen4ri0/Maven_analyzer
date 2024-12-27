@@ -1,5 +1,16 @@
 import subprocess
+import asyncio
+import aiohttp
+from xml.etree import ElementTree as ET
 from utils.logging import log_info, log_warning, log_error
+from artifact.artifact_status import ArtifactStatus
+from utils.file_operations import save_file, clean_up_files
+from artifact.key_analysis import (
+    are_keys_related,
+    is_legitimate_key_change,
+    extract_key_user_info,
+)
+
 
 KEY_SERVERS = [
     "hkps://keyserver.ubuntu.com",
@@ -155,3 +166,137 @@ def is_valid_key(key_id):
     except Exception as e:
         log_error(f"[GPG Key] Error while validating key {key_id}: {e}")
         return False
+
+
+async def compare_signatures_across_versions(group_id, artifact_id, start_version, base_repository_url):
+    """
+    Асинхронно проверяет подписи для текущей версии и до 4 предыдущих версий артефакта.
+    Артефакт считается неподписанным, только если подпись отсутствует во всех версиях.
+
+    Args:
+        group_id (str): Группа артефакта.
+        artifact_id (str): Идентификатор артефакта.
+        start_version (str): Текущая версия для анализа.
+        base_repository_url (str): URL базового репозитория.
+
+    Returns:
+        ArtifactStatus: Итоговый статус подписи.
+    """
+    metadata_url = f"{base_repository_url}/{group_id.replace('.', '/')}/{artifact_id}/maven-metadata.xml"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(metadata_url, timeout=10) as response:
+                if response.status != 200:
+                    log_error(f"[Version Retrieval] Failed to fetch metadata: {metadata_url} (Status: {response.status})")
+                    return ArtifactStatus.NOT_SIGNED
+
+                metadata_xml = ET.fromstring(await response.text())
+                all_versions = [version.text for version in metadata_xml.findall(".//version")]
+                log_info(f"[Version Retrieval] Found versions: {all_versions}")
+    except Exception as e:
+        log_error(f"[Version Retrieval] Failed to fetch or parse metadata: {e}")
+        return ArtifactStatus.NOT_SIGNED
+
+    # Проверяем наличие текущей версии
+    if start_version not in all_versions:
+        log_error(f"[Version Check] Start version {start_version} not found in retrieved versions: {all_versions}")
+        return ArtifactStatus.NOT_SIGNED
+
+    # Отбираем текущую и до 4 предыдущих версий
+    start_index = all_versions.index(start_version)
+    selected_versions = all_versions[max(0, start_index - 4): start_index + 1]
+    log_info(f"[Signature Check] Selected versions for verification: {selected_versions}")
+
+    # Инициализация переменных
+    signatures_found = 0
+    valid_signatures = 0
+    developer_key_ids = set()
+    key_user_info_map = {}
+    invalid_versions = []
+
+    async def fetch_file(session, url):
+        """
+        Асинхронно загружает файл по URL.
+        """
+        try:
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    return await response.read()
+                elif response.status == 404:
+                    log_warning(f"[Fetch File] File not found: {url}")
+                else:
+                    log_warning(f"[Fetch File] Unexpected status {response.status} for {url}")
+        except Exception as e:
+            log_error(f"[Fetch File] Error fetching {url}: {e}")
+        return None
+
+    # Проверяем подписи
+    async with aiohttp.ClientSession() as session:
+        for version in selected_versions:
+            log_info(f"[Signature Check] Checking version {version}")
+            signature_url = f"{base_repository_url}/{group_id.replace('.', '/')}/{artifact_id}/{version}/{artifact_id}-{version}.pom.asc"
+            file_url = f"{base_repository_url}/{group_id.replace('.', '/')}/{artifact_id}/{version}/{artifact_id}-{version}.pom"
+
+            # Проверяем наличие подписи перед скачиванием
+            try:
+                async with session.head(signature_url, timeout=5) as head_response:
+                    if head_response.status == 404:
+                        log_warning(f"[Signature Check] Signature file not found for version {version}.")
+                        continue
+                    elif head_response.status == 200:
+                        signatures_found += 1  # Учитываем, что хотя бы один файл подписи найден
+            except Exception as e:
+                log_warning(f"[Signature Check] Error while verifying signature availability for version {version}: {e}")
+                continue
+
+            # Загрузка файлов и проверка подписи
+            try:
+                file_content = await fetch_file(session, file_url)
+                signature_content = await fetch_file(session, signature_url)
+
+                if not file_content or not signature_content:
+                    invalid_versions.append(version)
+                    continue
+
+                save_file(f"{artifact_id}-{version}.pom", file_content)
+                save_file(f"{artifact_id}-{version}.pom.asc", signature_content)
+
+                signature_valid, key_id = verify_signature_with_key_handling(
+                    f"{artifact_id}-{version}.pom",
+                    f"{artifact_id}-{version}.pom.asc"
+                )
+
+                if signature_valid:
+                    valid_signatures += 1
+                    log_info(f"[Signature Check] Valid signature for version {version}.")
+                    if key_id:
+                        developer_key_ids.add(key_id)
+                        if key_id not in key_user_info_map:
+                            key_user_info_map[key_id] = extract_key_user_info(key_id)
+                else:
+                    log_warning(f"[Signature Check] Invalid signature for version {version}.")
+                    invalid_versions.append(version)
+            except Exception as e:
+                log_error(f"[Signature Check] Error verifying signature for version {version}: {e}")
+            finally:
+                clean_up_files(f"{artifact_id}-{version}", extensions=["pom", "pom.asc"])
+
+    # Оценка итогового статуса
+    if signatures_found == 0:  # Нет подписей ни для одной версии
+        return ArtifactStatus.NOT_SIGNED
+
+    if len(developer_key_ids) > 1:
+        if are_keys_related(key_user_info_map):
+            return ArtifactStatus.KEY_CHANGED_OK
+        elif is_legitimate_key_change(key_user_info_map):
+            return ArtifactStatus.LEGITIMATE_KEY_CHANGE
+        else:
+            return ArtifactStatus.POTENTIALLY_EXPLOITED
+
+    if invalid_versions and valid_signatures > 0:
+        return ArtifactStatus.KEY_CHANGED_OK
+
+    if valid_signatures == 0:
+        return ArtifactStatus.POTENTIALLY_EXPLOITED
+
+    return ArtifactStatus.OK

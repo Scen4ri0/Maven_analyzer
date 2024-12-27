@@ -36,10 +36,10 @@ def main():
     Main entry point for processing artifacts.
     """
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Verify Maven artifacts from a file.")
-    parser.add_argument("input_file", help="Path to the file containing artifacts to verify.")
+    parser = argparse.ArgumentParser(description="Verify Maven artifacts.")
+    parser.add_argument("input", help="Path to the file containing artifacts to verify or a single artifact in format 'groupId:artifactId:versionId'.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable detailed output.")
-    parser.add_argument("-o", "--output", required=True, help="Path to output file.")
+    parser.add_argument("-o", "--output", help="Path to output file (optional).")
     parser.add_argument("-d", "--domain", action="store_true", help="Enable domain and publication date checks.")
     parser.add_argument("--github-token", help="GitHub API token for authenticated requests.")
     args = parser.parse_args()
@@ -47,21 +47,33 @@ def main():
     # Configure logging
     configure_logging(verbose=args.verbose)
 
-    # Read artifacts from file
-    input_file = args.input_file
-    with open(input_file, "r") as file:
-        artifacts = [line.strip() for line in file if line.strip()]
+    # Determine if input is a file or single artifact
+    input_value = args.input
+    if ":" in input_value:
+        # Single artifact provided directly
+        artifacts = [input_value]
+    else:
+        # Read artifacts from file
+        try:
+            with open(input_value, "r") as file:
+                artifacts = [line.strip() for line in file if line.strip()]
+        except FileNotFoundError:
+            print(f"Error: File '{input_value}' not found.")
+            return
 
     # Run the async processing
     results = asyncio.run(
         process_all_artifacts(artifacts, args.domain, args.github_token)
     )
 
-    # Write all results to the specified output file
-    with open(args.output, "w") as output_file:
-        json.dump(results, output_file, indent=4)
-
-    print(f"\nResults written to {args.output}")
+    # Write all results to the specified output file, if provided
+    if args.output:
+        with open(args.output, "w") as output_file:
+            json.dump(results, output_file, indent=4)
+        print(f"\nResults written to {args.output}")
+    else:
+        print("\nFinal Results:")
+        print(json.dumps(results, indent=4))
 
 
 if __name__ == "__main__":

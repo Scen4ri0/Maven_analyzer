@@ -81,3 +81,28 @@ def is_recently_updated(domain):
     except Exception as e:
         log_error(f"[Domain Check] Error checking recent updates for domain '{domain}': {e}")
         return {"domain": domain, "recently_updated": False, "error": str(e)}
+
+
+
+async def check_domain_status(group_id):
+    """
+    Checks the domain availability and recent updates.
+    """
+    domain = group_id_to_domain(group_id)
+    log_info(f"[Domain Check] Checking domain: {domain}")
+    
+    try:
+        domain_status = "vulnerable" if is_domain_available(domain) else "ok"
+        recent_update = is_recently_updated(domain)
+        
+        if recent_update.get("error"):
+            log_warning(f"[Domain Check] Error checking updates: {recent_update['error']}")
+            recent_update_status = False
+        else:
+            recent_update_status = recent_update.get("recently_updated", False)
+
+        return domain_status, recent_update_status
+
+    except Exception as e:
+        log_error(f"[Domain Check] Unexpected error for domain '{domain}': {e}")
+        return "error", False

@@ -4,6 +4,7 @@ from .repositories import (
     find_in_repositories,
     get_available_extensions,
     compare_versions_across_repositories,
+    compare_contributors_across_versions,
 )
 from .jboss import check_jboss
 from .jitpack import check_jitpack, fetch_github_tags, fetch_github_contributors
@@ -19,4 +20,5 @@ __all__ = [
     "check_sonatype",
     "check_repository",
     "compare_versions_across_repositories",
+    "compare_contributors_across_versions",
 ]

@@ -3,9 +3,10 @@ import asyncio
 from xml.etree import ElementTree as ET
 from utils.logging import log_warning, log_info, log_error
 from repositories.jboss import check_jboss
-from repositories.jitpack import check_jitpack, fetch_github_tags
+from repositories.jitpack import check_jitpack, fetch_github_tags, fetch_github_contributors
 from repositories.sonatype import check_sonatype
 from repositories.sonatype_central import check_repository
+
 
 REPOSITORIES = [
     {"name": "Sonatype", "check_function": check_sonatype, "base_url": "https://s01.oss.sonatype.org/content/repositories/releases"},
@@ -175,3 +176,56 @@ def normalize_version(version):
         str: The normalized version string.
     """
     return version.lstrip("v").strip()
+
+async def compare_contributors_across_versions(owner, repo, versions, token=None):
+    """
+    Асинхронно сравнивает контрибьюторов между текущей версией и предыдущими.
+
+    Args:
+        owner (str): Владелец репозитория.
+        repo (str): Название репозитория.
+        versions (list): Список версий для анализа.
+        token (str, optional): GitHub токен.
+
+    Returns:
+        dict: Информация о различиях контрибьюторов между версиями.
+    """
+    contributors_map = {}
+    differences = {}
+
+    async def fetch_contributors(session, version):
+        """
+        Асинхронно получает список контрибьюторов для заданной версии.
+        """
+        try:
+            contributors = await fetch_github_contributors(owner, repo, version, token, session)
+            contributors_map[version] = set(contributors)
+            log_info(f"[GitHub Contributors] Contributors for {repo}@{version}: {contributors}")
+        except Exception as e:
+            log_error(f"[GitHub Contributors] Error fetching contributors for {repo}@{version}: {e}")
+            contributors_map[version] = set()
+
+    # Создаем асинхронные задачи для получения контрибьюторов
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_contributors(session, version) for version in versions]
+        await asyncio.gather(*tasks)
+
+    # Сравниваем контрибьюторов между базовой (последней) версией и предыдущими
+    base_version = versions[-1]
+    base_contributors = contributors_map.get(base_version, set())
+
+    for version in versions[:-1]:
+        current_contributors = contributors_map.get(version, set())
+        added = base_contributors - current_contributors
+        removed = current_contributors - base_contributors
+
+        # Логируем добавленных и удалённых контрибьюторов для каждой версии
+        if added or removed:
+            log_info(f"[GitHub Contributors] Differences for {repo}: {version} -> {base_version}")
+            log_info(f"  Added contributors: {list(added)}")
+            log_info(f"  Removed contributors: {list(removed)}")
+
+            differences[version] = {"added": list(added), "removed": list(removed)}
+
+    return differences
+
